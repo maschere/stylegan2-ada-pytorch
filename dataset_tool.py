@@ -14,6 +14,7 @@ import pickle
 import sys
 import tarfile
 import zipfile
+
 from pathlib import Path
 from typing import Callable, Optional, Tuple, Union
 
@@ -22,31 +23,21 @@ import numpy as np
 import PIL.Image
 from tqdm import tqdm
 
-#----------------------------------------------------------------------------
-
 def error(msg):
     print('Error: ' + msg)
     sys.exit(1)
-
-#----------------------------------------------------------------------------
 
 def maybe_min(a: int, b: Optional[int]) -> int:
     if b is not None:
         return min(a, b)
     return a
 
-#----------------------------------------------------------------------------
-
 def file_ext(name: Union[str, Path]) -> str:
     return str(name).split('.')[-1]
-
-#----------------------------------------------------------------------------
 
 def is_image_ext(fname: Union[str, Path]) -> bool:
     ext = file_ext(fname).lower()
     return f'.{ext}' in PIL.Image.EXTENSION # type: ignore
-
-#----------------------------------------------------------------------------
 
 def open_image_folder(source_dir, *, max_images: Optional[int]):
     input_images = [str(f) for f in sorted(Path(source_dir).rglob('*')) if is_image_ext(f) and os.path.isfile(f)]
@@ -66,15 +57,13 @@ def open_image_folder(source_dir, *, max_images: Optional[int]):
 
     def iterate_images():
         for idx, fname in enumerate(input_images):
-            arch_fname = os.path.relpath(fname, source_dir)
+            arch_fname = os.path.dirname(os.path.relpath(fname, source_dir))
             arch_fname = arch_fname.replace('\\', '/')
             img = np.array(PIL.Image.open(fname))
-            yield dict(img=img, label=labels.get(arch_fname))
+            yield dict(img=img, label=arch_fname)
             if idx >= max_idx-1:
                 break
     return max_idx, iterate_images()
-
-#----------------------------------------------------------------------------
 
 def open_image_zip(source, *, max_images: Optional[int]):
     with zipfile.ZipFile(source, mode='r') as z:
@@ -103,8 +92,6 @@ def open_image_zip(source, *, max_images: Optional[int]):
                     break
     return max_idx, iterate_images()
 
-#----------------------------------------------------------------------------
-
 def open_lmdb(lmdb_dir: str, *, max_images: Optional[int]):
     import cv2  # pip install opencv-python
     import lmdb  # pip install lmdb # pylint: disable=import-error
@@ -130,8 +117,6 @@ def open_lmdb(lmdb_dir: str, *, max_images: Optional[int]):
                     print(sys.exc_info()[1])
 
     return max_idx, iterate_images()
-
-#----------------------------------------------------------------------------
 
 def open_cifar10(tarball: str, *, max_images: Optional[int]):
     images = []
@@ -162,8 +147,6 @@ def open_cifar10(tarball: str, *, max_images: Optional[int]):
                 break
 
     return max_idx, iterate_images()
-
-#----------------------------------------------------------------------------
 
 def make_transform(
     transform: Optional[str],
@@ -216,8 +199,6 @@ def make_transform(
         return functools.partial(center_crop_wide, output_width, output_height)
     assert False, 'unknown transform'
 
-#----------------------------------------------------------------------------
-
 def open_dataset(source, *, max_images: Optional[int]):
     if os.path.isdir(source):
         if source.rstrip('/').endswith('_lmdb'):
@@ -235,8 +216,6 @@ def open_dataset(source, *, max_images: Optional[int]):
     else:
         error(f'Missing input file or directory: {source}')
 
-#----------------------------------------------------------------------------
-
 def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None], Callable[[], None]]:
     dest_ext = file_ext(dest)
 
@@ -248,9 +227,7 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
             zf.writestr(fname, data)
         return '', zip_write_bytes, zf.close
     else:
-        # If the output folder already exists, check that is is
-        # empty.
-        #
+        # If the output folder already exists, check that is is empty.
         # Note: creating the output directory is not strictly
         # necessary as folder_write_bytes() also mkdirs, but it's better
         # to give an error message earlier in case the dest folder
@@ -334,17 +311,24 @@ def convert_dataset(
     num_files, input_iter = open_dataset(source, max_images=max_images)
     archive_root_dir, save_bytes, close_dest = open_dest(dest)
 
-    transform_image = make_transform(transform, width, height, resize_filter)
+    if width is not None or height is not None:
+        print(' Resizing images to', width, height)
+        transform_image = make_transform(transform, width, height, resize_filter)
 
     dataset_attrs = None
 
+
+    label_dict = {}
     labels = []
     for idx, image in tqdm(enumerate(input_iter), total=num_files):
         idx_str = f'{idx:08d}'
         archive_fname = f'{idx_str[:5]}/img{idx_str}.png'
 
         # Apply crop and resize.
-        img = transform_image(image['img'])
+        if width is not None or height is not None:
+            img = transform_image(image['img'])
+        else:
+            img = image['img']
 
         # Transform may drop images.
         if img is None:
@@ -360,24 +344,29 @@ def convert_dataset(
         }
         if dataset_attrs is None:
             dataset_attrs = cur_image_attrs
-            width = dataset_attrs['width']
-            height = dataset_attrs['height']
-            if width != height:
-                error(f'Image dimensions after scale and crop are required to be square.  Got {width}x{height}')
-            if dataset_attrs['channels'] not in [1, 3]:
-                error('Input images must be stored as RGB or grayscale')
-            if width != 2 ** int(np.floor(np.log2(width))):
-                error('Image width/height after scale and crop are required to be power-of-two')
+            # width = dataset_attrs['width']
+            # height = dataset_attrs['height']
+            # if width != height:
+                # error(f'Image dimensions after scale and crop are required to be square.  Got {width}x{height}')
+            if dataset_attrs['channels'] not in [1,3,4]:
+                error('Input images must be stored as RGB, RGBA or grayscale')
+            # if width != 2 ** int(np.floor(np.log2(width))):
+                # error('Image width/height after scale and crop are required to be power-of-two')
         elif dataset_attrs != cur_image_attrs:
             err = [f'  dataset {k}/cur image {k}: {dataset_attrs[k]}/{cur_image_attrs[k]}' for k in dataset_attrs.keys()]
             error(f'Image {archive_fname} attributes must be equal across all images of the dataset.  Got:\n' + '\n'.join(err))
 
         # Save the image as an uncompressed PNG.
-        img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB' }[channels])
+        # img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB' }[channels])
+        img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB', 4: 'RGBA' }[channels])
         image_bits = io.BytesIO()
         img.save(image_bits, format='png', compress_level=0, optimize=False)
         save_bytes(os.path.join(archive_root_dir, archive_fname), image_bits.getbuffer())
-        labels.append([archive_fname, image['label']] if image['label'] is not None else None)
+        idx = label_dict.get(image['label'])
+        if idx is None:
+            label_dict[image['label']] = int(max([-1]+list(label_dict.values())))+1
+        labels.append([archive_fname, label_dict[image['label']]] if image['label'] is not None else None)
+        #print(image['label'])
 
     metadata = {
         'labels': labels if all(x is not None for x in labels) else None
