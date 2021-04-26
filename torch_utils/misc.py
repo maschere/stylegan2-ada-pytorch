@@ -157,8 +157,13 @@ def copy_params_and_buffers(src_module, dst_module, require_all=False):
     for name, tensor in named_params_and_buffers(dst_module):
         assert (name in src_tensors) or (not require_all)
         if name in src_tensors:
-            tensor.copy_(src_tensors[name].detach()).requires_grad_(tensor.requires_grad)
-
+            src = src_tensors[name].detach()
+            min_shape = np.fmin(src.shape,tensor.shape)
+            if src.shape != tensor.shape:
+                print(f"src: {src.shape}  dst: {tensor.shape}  min: {min_shape}")
+            min_slice = tuple(slice(0,s, 1) for s in min_shape)
+            tensor[min_slice].copy_(src[min_slice]).requires_grad_(tensor.requires_grad)
+            #tensor.copy_(src_tensors[name].detach()).requires_grad_(tensor.requires_grad)
 #----------------------------------------------------------------------------
 # Context manager for easily enabling/disabling DistributedDataParallel
 # synchronization.
