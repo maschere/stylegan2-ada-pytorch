@@ -16,12 +16,16 @@ import tarfile
 import zipfile
 
 from pathlib import Path
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import click
+from click.core import Option
 import numpy as np
 import PIL.Image
 from tqdm import tqdm
+import pandas as pd
+
+
 
 def error(msg):
     print('Error: ' + msg)
@@ -39,114 +43,27 @@ def is_image_ext(fname: Union[str, Path]) -> bool:
     ext = file_ext(fname).lower()
     return f'.{ext}' in PIL.Image.EXTENSION # type: ignore
 
-def open_image_folder(source_dir, *, max_images: Optional[int]):
+def open_image_folder(source_dir, *, max_images: Optional[int]) -> Tuple[List[str],Optional[List[int]]]:
     input_images = [str(f) for f in sorted(Path(source_dir).rglob('*')) if is_image_ext(f) and os.path.isfile(f)]
+    labels = [os.path.dirname(os.path.relpath(f, source_dir)) for f in input_images]
+    labels = pd.Categorical(labels).codes #convert to integers
+    assert(len(labels)==len(input_images))
+    dat = pd.DataFrame({"img": input_images, "labels": labels})
+    
 
-    # Load labels.
-    labels = {}
-    meta_fname = os.path.join(source_dir, 'dataset.json')
-    if os.path.isfile(meta_fname):
-        with open(meta_fname, 'r') as file:
-            labels = json.load(file)['labels']
-            if labels is not None:
-                labels = { x[0]: x[1] for x in labels }
-            else:
-                labels = {}
+    p = np.random.permutation(len(input_images))
+    u_labels = np.unique(labels)
+    if len(u_labels) > 1 and max_images is not None:
+        #sample per class
+        dat = dat.groupby("labels").apply(lambda x: x.sample(n=min(max_images, len(x)))).reset_index(drop=True)
+    elif max_images is not None:
+        #sample over all
+        dat = dat.loc[p]
+    
+    
 
-    max_idx = maybe_min(len(input_images), max_images)
+    return dat["img"].to_numpy().tolist(), dat["labels"].to_numpy().tolist() if len(u_labels) > 1 else None
 
-    def iterate_images():
-        for idx, fname in enumerate(input_images):
-            arch_fname = os.path.dirname(os.path.relpath(fname, source_dir))
-            arch_fname = arch_fname.replace('\\', '/')
-            img = np.array(PIL.Image.open(fname))
-            yield dict(img=img, label=arch_fname)
-            if idx >= max_idx-1:
-                break
-    return max_idx, iterate_images()
-
-def open_image_zip(source, *, max_images: Optional[int]):
-    with zipfile.ZipFile(source, mode='r') as z:
-        input_images = [str(f) for f in sorted(z.namelist()) if is_image_ext(f)]
-
-        # Load labels.
-        labels = {}
-        if 'dataset.json' in z.namelist():
-            with z.open('dataset.json', 'r') as file:
-                labels = json.load(file)['labels']
-                if labels is not None:
-                    labels = { x[0]: x[1] for x in labels }
-                else:
-                    labels = {}
-
-    max_idx = maybe_min(len(input_images), max_images)
-
-    def iterate_images():
-        with zipfile.ZipFile(source, mode='r') as z:
-            for idx, fname in enumerate(input_images):
-                with z.open(fname, 'r') as file:
-                    img = PIL.Image.open(file) # type: ignore
-                    img = np.array(img)
-                yield dict(img=img, label=labels.get(fname))
-                if idx >= max_idx-1:
-                    break
-    return max_idx, iterate_images()
-
-def open_lmdb(lmdb_dir: str, *, max_images: Optional[int]):
-    import cv2  # pip install opencv-python
-    import lmdb  # pip install lmdb # pylint: disable=import-error
-
-    with lmdb.open(lmdb_dir, readonly=True, lock=False).begin(write=False) as txn:
-        max_idx = maybe_min(txn.stat()['entries'], max_images)
-
-    def iterate_images():
-        with lmdb.open(lmdb_dir, readonly=True, lock=False).begin(write=False) as txn:
-            for idx, (_key, value) in enumerate(txn.cursor()):
-                try:
-                    try:
-                        img = cv2.imdecode(np.frombuffer(value, dtype=np.uint8), 1)
-                        if img is None:
-                            raise IOError('cv2.imdecode failed')
-                        img = img[:, :, ::-1] # BGR => RGB
-                    except IOError:
-                        img = np.array(PIL.Image.open(io.BytesIO(value)))
-                    yield dict(img=img, label=None)
-                    if idx >= max_idx-1:
-                        break
-                except:
-                    print(sys.exc_info()[1])
-
-    return max_idx, iterate_images()
-
-def open_cifar10(tarball: str, *, max_images: Optional[int]):
-    images = []
-    labels = []
-
-    with tarfile.open(tarball, 'r:gz') as tar:
-        for batch in range(1, 6):
-            member = tar.getmember(f'cifar-10-batches-py/data_batch_{batch}')
-            with tar.extractfile(member) as file:
-                data = pickle.load(file, encoding='latin1')
-            images.append(data['data'].reshape(-1, 3, 32, 32))
-            labels.append(data['labels'])
-
-    images = np.concatenate(images)
-    labels = np.concatenate(labels)
-    images = images.transpose([0, 2, 3, 1]) # NCHW -> NHWC
-    assert images.shape == (50000, 32, 32, 3) and images.dtype == np.uint8
-    assert labels.shape == (50000,) and labels.dtype in [np.int32, np.int64]
-    assert np.min(images) == 0 and np.max(images) == 255
-    assert np.min(labels) == 0 and np.max(labels) == 9
-
-    max_idx = maybe_min(len(images), max_images)
-
-    def iterate_images():
-        for idx, img in enumerate(images):
-            yield dict(img=img, label=int(labels[idx]))
-            if idx >= max_idx-1:
-                break
-
-    return max_idx, iterate_images()
 
 def make_transform(
     transform: Optional[str],
@@ -199,23 +116,6 @@ def make_transform(
         return functools.partial(center_crop_wide, output_width, output_height)
     assert False, 'unknown transform'
 
-def open_dataset(source, *, max_images: Optional[int]):
-    if os.path.isdir(source):
-        if source.rstrip('/').endswith('_lmdb'):
-            return open_lmdb(source, max_images=max_images)
-        else:
-            return open_image_folder(source, max_images=max_images)
-    elif os.path.isfile(source):
-        if source.endswith('cifar-10-python.tar.gz'):
-            return open_cifar10(source, max_images=max_images)
-        ext = file_ext(source)
-        if ext == 'zip':
-            return open_image_zip(source, max_images=max_images)
-        else:
-            assert False, 'unknown archive type'
-    else:
-        error(f'Missing input file or directory: {source}')
-
 def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None], Callable[[], None]]:
     dest_ext = file_ext(dest)
 
@@ -248,10 +148,9 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
 
 @click.command()
 @click.pass_context
-@click.option('--source', help='Directory or archive name for input dataset', required=True, metavar='PATH')
-@click.option('--dest', help='Output directory or archive name for output dataset', required=True, metavar='PATH')
-@click.option('--max-images', help='Output only up to `max-images` images', type=int, default=None)
-@click.option('--resize-filter', help='Filter to use when resizing images for output resolution', type=click.Choice(['box', 'lanczos']), default='lanczos', show_default=True)
+@click.option('--source', help='Directory for input dataset', required=True, metavar='PATH')
+@click.option('--dest', help='Output archive name for output dataset', required=True, metavar='PATH')
+@click.option('--max-images', help='Output only up to `max-images` images (per class for conditional)', type=int, default=None)
 @click.option('--transform', help='Input crop/resize mode', type=click.Choice(['center-crop', 'center-crop-wide']))
 @click.option('--width', help='Output width', type=int)
 @click.option('--height', help='Output height', type=int)
@@ -261,7 +160,6 @@ def convert_dataset(
     dest: str,
     max_images: Optional[int],
     transform: Optional[str],
-    resize_filter: str,
     width: Optional[int],
     height: Optional[int]
 ):
@@ -308,68 +206,31 @@ def convert_dataset(
     if dest == '':
         ctx.fail('--dest output filename or directory must not be an empty string')
 
-    num_files, input_iter = open_dataset(source, max_images=max_images)
+    images,labels_raw = open_image_folder(source, max_images=max_images)
     archive_root_dir, save_bytes, close_dest = open_dest(dest)
 
-    if width is not None or height is not None:
-        print(' Resizing images to', width, height)
-        transform_image = make_transform(transform, width, height, resize_filter)
-
-    dataset_attrs = None
-
-
-    label_dict = {}
     labels = []
-    for idx, image in tqdm(enumerate(input_iter), total=num_files):
+
+    for idx in tqdm(range(len(images))):
         idx_str = f'{idx:08d}'
         archive_fname = f'{idx_str[:5]}/img{idx_str}.png'
 
-        # Apply crop and resize.
-        if width is not None or height is not None:
-            img = transform_image(image['img'])
-        else:
-            img = image['img']
-
-        # Transform may drop images.
-        if img is None:
-            continue
-
-        # Error check to require uniform image attributes across
-        # the whole dataset.
-        channels = img.shape[2] if img.ndim == 3 else 1
-        cur_image_attrs = {
-            'width': img.shape[1],
-            'height': img.shape[0],
-            'channels': channels
-        }
-        if dataset_attrs is None:
-            dataset_attrs = cur_image_attrs
-            # width = dataset_attrs['width']
-            # height = dataset_attrs['height']
-            # if width != height:
-                # error(f'Image dimensions after scale and crop are required to be square.  Got {width}x{height}')
-            if dataset_attrs['channels'] not in [1,3,4]:
-                error('Input images must be stored as RGB, RGBA or grayscale')
-            # if width != 2 ** int(np.floor(np.log2(width))):
-                # error('Image width/height after scale and crop are required to be power-of-two')
-        elif dataset_attrs != cur_image_attrs:
-            err = [f'  dataset {k}/cur image {k}: {dataset_attrs[k]}/{cur_image_attrs[k]}' for k in dataset_attrs.keys()]
-            error(f'Image {archive_fname} attributes must be equal across all images of the dataset.  Got:\n' + '\n'.join(err))
+        img = PIL.Image.open(images[idx])
+        #resize
+        if width is not None and height is not None:
+            img = img.resize((width,height),PIL.Image.LANCZOS)
 
         # Save the image as an uncompressed PNG.
         # img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB' }[channels])
-        img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB', 4: 'RGBA' }[channels])
         image_bits = io.BytesIO()
         img.save(image_bits, format='png', compress_level=0, optimize=False)
         save_bytes(os.path.join(archive_root_dir, archive_fname), image_bits.getbuffer())
-        idx = label_dict.get(image['label'])
-        if idx is None:
-            label_dict[image['label']] = int(max([-1]+list(label_dict.values())))+1
-        labels.append([archive_fname, label_dict[image['label']]] if image['label'] is not None else None)
+        if labels_raw is not None:
+            labels.append([archive_fname, labels_raw[idx]])
         #print(image['label'])
 
     metadata = {
-        'labels': labels if all(x is not None for x in labels) else None
+        'labels': labels if len(labels)>0 else None
     }
     save_bytes(os.path.join(archive_root_dir, 'dataset.json'), json.dumps(metadata))
     close_dest()
