@@ -154,6 +154,7 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
 @click.option('--transform', help='Input crop/resize mode', type=click.Choice(['center-crop', 'center-crop-wide']))
 @click.option('--width', help='Output width', type=int)
 @click.option('--height', help='Output height', type=int)
+@click.option('--channels', help='Output height', type=int, default=3)
 def convert_dataset(
     ctx: click.Context,
     source: str,
@@ -161,7 +162,8 @@ def convert_dataset(
     max_images: Optional[int],
     transform: Optional[str],
     width: Optional[int],
-    height: Optional[int]
+    height: Optional[int],
+    channels: int
 ):
     """Convert an image dataset into a dataset archive usable with StyleGAN2 ADA PyTorch.
 
@@ -219,6 +221,10 @@ def convert_dataset(
         #resize
         if width is not None and height is not None:
             img = img.resize((width,height),PIL.Image.LANCZOS)
+        if channels == 3:
+            img = PIL.Image.fromarray(np.asarray(img)[:,:,:3],"RGB")
+        elif channels == 4:
+            img = PIL.Image.fromarray(np.asarray(img)[:,:,:4],"RGBA")
 
         # Save the image as an uncompressed PNG.
         # img = PIL.Image.fromarray(img, { 1: 'L', 3: 'RGB' }[channels])
