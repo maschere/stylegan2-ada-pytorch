@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 import dnnlib
 import legacy
-
+import clip
 image_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).cuda()
 image_std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).cuda()
 
@@ -232,7 +232,7 @@ def project(
                 clip_text = 1 - model(clip_synth_image, target_text)[0].sum() / 100
                 if use_center:
                     clip_text += 1 - model(clip_cynth_center_image, target_text)[0].sum() / 100
-                dist += 2*F.relu(adj_center*clip_text*clip_text - min_threshold / adj_center)
+                dist += 4*F.relu(adj_center*clip_text*clip_text - min_threshold / adj_center)
 
         if use_pixel:
             pixel_dist =  (target_images - synth_images).abs().sum() / 2000000.0

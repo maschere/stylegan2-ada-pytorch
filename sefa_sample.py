@@ -126,7 +126,7 @@ def sefa_sample(generator,num_sam = 5,num_sem = 5, distances = np.linspace(-3.0,
     layers = []
     i = 0
     for w in generator.synthesis.named_parameters():
-         if re.search("conv\d\.affine\.weight$", w[0]) is not None:
+        if re.search("conv\d\.affine\.weight$", w[0]) is not None:
             print(w[0])
             #print(w[1].T.shape)
             weights.append(w[1].T.cpu().detach().numpy())
@@ -152,6 +152,7 @@ def sefa_sample(generator,num_sam = 5,num_sem = 5, distances = np.linspace(-3.0,
 
     #iterate samples X semantics X distances
     p = itertools.product(range(num_sem),range(num_sam), range(len(distances)))
+    imgs=[]
     for sem_id,sam_id,d_id in p:
         code = codes[sam_id:sam_id + 1]
         boundary = boundaries[sem_id:sem_id + 1]
@@ -164,25 +165,34 @@ def sefa_sample(generator,num_sam = 5,num_sem = 5, distances = np.linspace(-3.0,
         image = Image.fromarray(image.cpu().numpy())
         fname = f"sefa_results/sam{sam_id}_sem{sem_id}_d{d_id}.jpg"
         setattr(image,"filename", fname)
-        yield image
+        imgs.append(image)
+    return imgs,boundaries,codes
         
-# %%
-with open('pretrained/dnd_faces1024-snapshot-001028.pkl', 'rb') as f:
+# %% tokens004276
+#with open('pretrained/dnd_faces1024-snapshot-001028.pkl', 'rb') as f:
+with open('pretrained/tokens004276.pkl', 'rb') as f:
     gen = pickle.load(f)['G_ema'].cuda()  # torch.nn.Module
 
 # %%
-imgs = list(sefa_sample(gen, rand_seed=123))
 # %%
-display_images(imgs[50:100],10)
+
 # %%
-def generate(G, seed:int = None, z = None, trunc = 0.9, noise_mode = ['const', 'random', 'none'][1],c = None):
+def generate(G, seed:int = None, z = None, zhat = None, trunc = 0.9, noise_mode = ['const', 'random', 'none'][1],c = None, boundary = None, boundary_layers = list(range(18))):
     # %% sample an image
     if seed is None and z is None:
         z = torch.randn([1, G.z_dim]).cuda()    # latent codes
     elif seed is not None and z is None:
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).cuda()
     # class labels (not used in this example)
-    img = G(z, c,truncation_psi=trunc,noise_mode=noise_mode)  
+    if zhat is None:
+        zhat = G.mapping(z,None,truncation_psi=trunc,truncation_cutoff=8,noise_mode=noise_mode)
+    else:
+        zhat = zhat.copy()
+    #add boundary semantics
+    if boundary is not None:
+        zhat[:,boundary_layers,:] += boundary
+    #img = G(z, c,truncation_psi=trunc,noise_mode=noise_mode)  
+    img = G.synthesis(torch.from_numpy(zhat).type(torch.FloatTensor).cuda())
     #convert and render it
     img_dat = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)[0]
     return Image.fromarray(img_dat.cpu().numpy())
@@ -195,6 +205,8 @@ z2 = torch.randn(5, gen.z_dim).cuda()[2:3]
 
 generate(gen, z=z2)
 # %%
+imgs,boundaries,zhats = sefa_sample(gen, rand_seed=125, num_sam=5, num_sem=5,sel_layers=list(range(16)))
+# %%
 @interact(semantic=range(5))
 def update(semantic=0):
     # img_byte_arr = io.BytesIO()
@@ -202,4 +214,6 @@ def update(semantic=0):
     # display(ipywidgets.Image(value=img_byte_arr.getvalue(),format="png",width=imgs[a].width, height=imgs[a].height))
     display_images(imgs[50*semantic:50*semantic+50],10)
 
+# %%
+generate(gen, zhat=zhats[2:3],boundary=boundaries[0:1]*1+boundaries[1:2]*-1+boundaries[2:3]*-3,boundary_layers=list(range(16))).save("caped_silmoth.png")
 # %%
