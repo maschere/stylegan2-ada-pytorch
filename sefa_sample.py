@@ -132,7 +132,7 @@ def sefa_sample(generator,num_sam = 5,num_sem = 5, distances = np.linspace(-3.0,
             weights.append(w[1].T.cpu().detach().numpy())
             layers.append(i)
             i += 1
-    weights.append(generator.synthesis.b1024.torgb.affine.weight.T.cpu().detach().numpy())
+    weights.append(list(generator.synthesis.named_modules())[-1][1].weight.T.cpu().detach().numpy())
     i += 1
     weights = [weights[i] for i in sel_layers]
     weight = np.concatenate(weights, axis=1).astype(np.float32)
@@ -185,14 +185,14 @@ def generate(G, seed:int = None, z = None, zhat = None, trunc = 0.9, noise_mode 
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).cuda()
     # class labels (not used in this example)
     if zhat is None:
-        zhat = G.mapping(z,None,truncation_psi=trunc,truncation_cutoff=8,noise_mode=noise_mode)
+        zhat = G.mapping(z,None,truncation_psi=trunc,truncation_cutoff=8)
     else:
-        zhat = zhat.copy()
+        zhat = torch.from_numpy(zhat).type(torch.FloatTensor).cuda()
     #add boundary semantics
     if boundary is not None:
         zhat[:,boundary_layers,:] += boundary
     #img = G(z, c,truncation_psi=trunc,noise_mode=noise_mode)  
-    img = G.synthesis(torch.from_numpy(zhat).type(torch.FloatTensor).cuda())
+    img = G.synthesis(zhat,noise_mode=noise_mode)
     #convert and render it
     img_dat = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)[0]
     return Image.fromarray(img_dat.cpu().numpy())
@@ -215,5 +215,5 @@ def update(semantic=0):
     display_images(imgs[50*semantic:50*semantic+50],10)
 
 # %%
-generate(gen, zhat=zhats[2:3],boundary=boundaries[0:1]*1+boundaries[1:2]*-1+boundaries[2:3]*-3,boundary_layers=list(range(16))).save("caped_silmoth.png")
+generate(gen, zhat=zhats[2:3],boundary=boundaries[0:1]*1+boundaries[1:2]*-1+boundaries[2:3]*-3,boundary_layers=list(range(16))).save("test.png")
 # %%
