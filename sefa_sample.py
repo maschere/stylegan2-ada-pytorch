@@ -169,8 +169,8 @@ def sefa_sample(generator,num_sam = 5,num_sem = 5, distances = np.linspace(-3.0,
     return imgs,boundaries,codes
         
 # %% tokens004276
-#with open('pretrained/dnd_faces1024-snapshot-001028.pkl', 'rb') as f:
-with open('pretrained/tokens004276.pkl', 'rb') as f:
+with open('pretrained/dnd_faces1024-snapshot-001028.pkl', 'rb') as f:
+#with open('pretrained/ffhq1024.pkl', 'rb') as f:
     gen = pickle.load(f)['G_ema'].cuda()  # torch.nn.Module
 
 # %%
@@ -197,7 +197,7 @@ def generate(G, seed:int = None, z = None, zhat = None, trunc = 0.9, noise_mode 
     img_dat = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)[0]
     return Image.fromarray(img_dat.cpu().numpy())
 # %%
-generate(gen,4)
+generate(gen,1)
 # %%
 np.random.seed(124)
 torch.manual_seed(124)
@@ -205,7 +205,7 @@ z2 = torch.randn(5, gen.z_dim).cuda()[2:3]
 
 generate(gen, z=z2)
 # %%
-imgs,boundaries,zhats = sefa_sample(gen, rand_seed=125, num_sam=5, num_sem=5,sel_layers=list(range(16)))
+imgs,boundaries,zhats = sefa_sample(gen, rand_seed=125, num_sam=5, num_sem=5,sel_layers=list(range(3,10)))
 # %%
 @interact(semantic=range(5))
 def update(semantic=0):
@@ -215,5 +215,15 @@ def update(semantic=0):
     display_images(imgs[50*semantic:50*semantic+50],10)
 
 # %%
-generate(gen, zhat=zhats[2:3],boundary=boundaries[0:1]*1+boundaries[1:2]*-1+boundaries[2:3]*-3,boundary_layers=list(range(16))).save("test.png")
+generate(gen, zhat=zhats[2:3],boundary=boundaries[0:1]*1+boundaries[1:2]*-1+boundaries[2:3]*-3,boundary_layers=list(range(3,10))).save("test.png")
+# %%
+import random
+import fantasynames as names
+import time
+while True:
+    time.sleep(2)
+    nextSeed = random.randint(0,999999)
+    img = generate(gen,nextSeed)
+    img.resize((512,512)).save(f"dnd/portrait_{nextSeed}_" +  names.human().replace(" ","_") + ".png")
+    
 # %%
