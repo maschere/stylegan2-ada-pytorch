@@ -122,8 +122,8 @@ def align_face(filepath):
 
 
 # %%
-face_img = align_face("dhbw/haerle.jpg").resize((1024,1024))
-face_img.save("face.jpg")
+#face_img = align_face("inputface.jpg").resize((1024,1024))
+#face_img.save("face.jpg")
 # %%
 
 
